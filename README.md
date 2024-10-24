@@ -194,4 +194,205 @@ The above snippets only represent a core implementation for integrating threshol
 2. **Dynamic programming for cut enumeration** and memory management.
 3. **Benchmark testing scripts** to run multiple benchmarks and measure results.
 
-Let me know if you need more specific implementations for any part of the process!
+---
+Here are the additional supporting codes for implementing efficient threshold logic synthesis in ABC, including NPN classification, hashing for threshold detection, dynamic programming for cut enumeration, memory management, and benchmark testing scripts.
+
+### 1. **NPN Classification and Hashing for Threshold Detection (`tls_npn.c`)**
+   - Create a new file called `tls_npn.c` in the `src/tls/` directory.
+   - Implement functions for NPN classification and hashing to identify threshold functions efficiently.
+
+```c
+#include "abc.h"
+#include "base/abc/abc.h"
+#include "misc/extra/extra.h"
+
+// Structure to store NPN classes
+typedef struct NpnClass_t_ {
+    int nVars;
+    unsigned uTruth; // Truth table of the function
+    int * pWeights;
+    int Threshold;
+} NpnClass_t;
+
+// Hash table to store NPN representatives and corresponding weights
+st__table * NpnHashTable;
+
+// Initialize NPN hash table
+void NpnHashTableInit() {
+    NpnHashTable = st_init_table(st_ptrcmp, st_ptrhash);
+}
+
+// Compute NPN representative and store in the hash table
+int ComputeNpnRepresentative(Abc_Obj_t * pObj, NpnClass_t * pNpnClass) {
+    unsigned uTruth = Abc_ObjTruth(pObj);
+    pNpnClass->uTruth = Extra_TruthCanonNpn(&uTruth, pNpnClass->nVars);
+
+    // Check if the function is already in the hash table
+    if (st_lookup(NpnHashTable, (char *)pNpnClass->uTruth, (char **)&pNpnClass)) {
+        // If found, return the existing weights and threshold
+        return 1;
+    }
+
+    // Calculate weights and threshold
+    int pWeights[MAX_VARS];
+    int Threshold;
+    if (ComputeWeights(pObj, pWeights, &Threshold)) {
+        pNpnClass->pWeights = Extra_UtilCopyArray(pWeights, pNpnClass->nVars);
+        pNpnClass->Threshold = Threshold;
+
+        // Add to hash table
+        st_insert(NpnHashTable, (char *)pNpnClass->uTruth, (char *)pNpnClass);
+        return 1; // Function is thresholdable
+    }
+    return 0; // Not thresholdable
+}
+
+// Free the hash table
+void NpnHashTableFree() {
+    st_free_table(NpnHashTable);
+}
+```
+
+### 2. **Dynamic Programming for Cut Enumeration (`map_if_dynamic.c`)**
+   - Create a new file called `map_if_dynamic.c` in the `src/map/` directory.
+   - Implement dynamic programming for cut enumeration with redundant cut handling.
+
+```c
+#include "abc.h"
+#include "base/abc/abc.h"
+
+// Define a structure to store cuts
+typedef struct Cut_t_ {
+    int nLeaves;
+    Abc_Obj_t * pLeaves[MAX_LEAVES];
+    int IsThreshold;
+    int pWeights[MAX_VARS];
+    int Threshold;
+} Cut_t;
+
+// Function to perform cut enumeration using dynamic programming
+void EnumerateCutsDP(Abc_Obj_t * pObj, Cut_t * pCutSet) {
+    // Initialize cuts for primary inputs
+    if (Abc_ObjIsPi(pObj)) {
+        Cut_t * pCut = CutCreate(1, &pObj);
+        AddCutToSet(pCutSet, pCut);
+        return;
+    }
+
+    // Get the cuts of the fanins
+    Cut_t * pCutFanin0 = Abc_ObjCut(pObj->pFanin0);
+    Cut_t * pCutFanin1 = Abc_ObjCut(pObj->pFanin1);
+
+    // Merge cuts of the fanins
+    MergeCuts(pCutFanin0, pCutFanin1, pCutSet);
+
+    // Check if cuts are thresholdable and add redundant cuts
+    for (int i = 0; i < pCutSet->nCuts; i++) {
+        Cut_t * pCut = &pCutSet->pCuts[i];
+        if (ComputeNpnRepresentative(pObj, pCut)) {
+            pCut->IsThreshold = 1;
+        } else {
+            pCut->IsThreshold = 0;
+        }
+    }
+}
+
+// Helper function to merge cuts
+void MergeCuts(Cut_t * pCut0, Cut_t * pCut1, Cut_t * pCutSet) {
+    // Implement merging of cuts from two fanins and add to cut set
+    // Ensure the merged cut is valid (check fan-in limit)
+}
+```
+
+### 3. **Memory Management for Cut Structures (`tls_memory.c`)**
+   - Create a new file called `tls_memory.c` in the `src/tls/` directory.
+   - Implement memory management functions for cut structures and dynamic arrays.
+
+```c
+#include "abc.h"
+#include "base/abc/abc.h"
+
+// Allocate memory for a new cut
+Cut_t * CutCreate(int nLeaves, Abc_Obj_t ** pLeaves) {
+    Cut_t * pCut = ABC_ALLOC(Cut_t, 1);
+    pCut->nLeaves = nLeaves;
+    for (int i = 0; i < nLeaves; i++) {
+        pCut->pLeaves[i] = pLeaves[i];
+    }
+    return pCut;
+}
+
+// Add a cut to the cut set
+void AddCutToSet(Cut_t * pCutSet, Cut_t * pCut) {
+    if (pCutSet->nCuts < MAX_CUTS) {
+        pCutSet->pCuts[pCutSet->nCuts++] = *pCut;
+    }
+}
+
+// Free memory for a cut set
+void CutSetFree(Cut_t * pCutSet) {
+    for (int i = 0; i < pCutSet->nCuts; i++) {
+        ABC_FREE(pCutSet->pCuts[i].pWeights);
+    }
+    ABC_FREE(pCutSet);
+}
+```
+
+### 4. **Benchmark Testing Scripts (`run_benchmarks.sh`)**
+   - Create a shell script to automate the testing of different benchmarks and area metrics.
+
+```bash
+#!/bin/bash
+
+BENCHMARKS=("c17" "c432" "c499" "c880" "c1355" "c1908") # Add more as needed
+METRICS=("TLG_count" "sum_weights" "fanin")
+
+for benchmark in "${BENCHMARKS[@]}"; do
+    for metric in "${METRICS[@]}"; do
+        echo "Running $benchmark with area metric: $metric"
+        ./abc -c "read ./benchmarks/$benchmark.blif; strash; set_area_metric $metric; map_threshold; print_stats" > ./results/${benchmark}_${metric}.log
+    done
+done
+
+echo "All benchmarks tested!"
+```
+
+### 5. **NPN Utilities and Support (`extra_util.c`)**
+   - Use existing NPN utilities in ABC, or add additional NPN utilities in `extra_util.c`.
+
+```c
+#include "abc.h"
+#include "misc/extra/extra.h"
+
+// Copy an array of integers
+int * Extra_UtilCopyArray(int * pArray, int nSize) {
+    int * pNewArray = ABC_ALLOC(int, nSize);
+    for (int i = 0; i < nSize; i++) {
+        pNewArray[i] = pArray[i];
+    }
+    return pNewArray;
+}
+
+// Additional utility functions for NPN transformations and truth table manipulation
+```
+
+### Compilation and Testing
+
+1. **Add new files to the ABC Makefile (`src/Makefile`)**:
+   - Add the newly created files under the corresponding section:
+     ```makefile
+     SRCS += src/tls/tls_identify.c src/tls/tls_npn.c src/tls/tls_area.c \
+             src/map/map_if_dynamic.c src/tls/tls_memory.c
+     ```
+2. **Recompile ABC**:
+   ```bash
+   make clean
+   make
+   ```
+3. **Run the benchmark testing script**:
+   ```bash
+   chmod +x run_benchmarks.sh
+   ./run_benchmarks.sh
+   ```
+
+
